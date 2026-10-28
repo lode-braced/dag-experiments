@@ -32,10 +32,13 @@ def redundant_edge_fraction(dag: SyntheticDag, edges: Sequence[int] | IntArray) 
         # Every edge climbs at least one generation, so a longer path climbs at least two.
         if dag.generation[child] - dag.generation[parent] < 2:
             continue
+        # A→C is redundant if A reaches another parent B of C: A→…→B→C is the longer path.
         other_parents = parents_graph.indices[
             parents_graph.indptr[child] : parents_graph.indptr[child + 1]
         ]
         other_parents = other_parents[other_parents != parent]
+        # The search also follows A→C itself. That can't cause a false match: in a DAG, C
+        # can't reach one of its own parents.
         downstream = breadth_first_order(graph, parent, return_predecessors=False)
         redundant += bool(np.isin(other_parents, downstream).any())
     return redundant / len(edges)

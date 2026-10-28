@@ -139,6 +139,8 @@ def _layered_positions(
     dag: SyntheticDag, nodes: IntArray, parents: IntArray, children: IntArray
 ) -> dict[int, float]:
     """Stack each generation's nodes vertically, ordered by their parents' average height."""
+    # Only edges inside the pipeline decide the order; parents from elsewhere are drawn in
+    # a separate band below the pipeline.
     own = set(nodes.tolist())
     own_parents = defaultdict(list)
     for parent, child in zip(parents.tolist(), children.tolist()):
@@ -149,6 +151,9 @@ def _layered_positions(
     for node in nodes.tolist():
         by_generation[int(dag.generation[node])].append(node)
 
+    # Place generation by generation, so a node's parents already have a height. Putting
+    # each node near its parents' average height keeps edges short and reduces crossings;
+    # each column is centered around zero.
     position: dict[int, float] = {}
     for generation in sorted(by_generation):
         column = by_generation[generation]

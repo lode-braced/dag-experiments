@@ -226,19 +226,21 @@ def nodes_per_generation(dag: SyntheticDag) -> Figure:
 def degree_distributions(dag: SyntheticDag) -> Figure:
     dependencies = np.bincount(dag.children, minlength=dag.num_nodes)
     dependents = np.bincount(dag.parents, minlength=dag.num_nodes)
+    # The max label goes where its curve leaves room: dependencies end in a steep drop,
+    # so beside the end point; dependents end in a flat run, so above it.
     series = [
-        (dependencies[dependencies > 0], "dependencies, as a share of non-roots"),
-        (dependents, "dependents, as a share of all nodes"),
+        (dependencies[dependencies > 0], "dependencies, as a share of non-roots", (8, 0), "left"),
+        (dependents, "dependents, as a share of all nodes", (0, 10), "center"),
     ]
 
     fig, ax = plt.subplots(figsize=(8, 4.5), layout="constrained")
-    for color, (counts, label) in zip(SERIES, series):
+    for color, (counts, label, offset, align) in zip(SERIES, series):
         k = np.arange(1, counts.max() + 1)
         at_least_k = 1 - np.searchsorted(np.sort(counts), k, side="left") / len(counts)
         ax.plot(k, at_least_k, color=color, drawstyle="steps-post", label=label)
         ax.plot(k[-1], at_least_k[-1], "o", markersize=8, color=color, markeredgecolor=SURFACE, markeredgewidth=2)
-        ax.annotate(f"max {k[-1]:,}", (k[-1], at_least_k[-1]), (0, 10), textcoords="offset points",
-                    ha="center", color=INK_SECONDARY)
+        ax.annotate(f"max {k[-1]:,}", (k[-1], at_least_k[-1]), offset, textcoords="offset points",
+                    ha=align, va="bottom" if align == "center" else "center", color=INK_SECONDARY)
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))

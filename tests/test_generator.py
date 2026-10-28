@@ -7,12 +7,16 @@ from dag_experiments.synthetic.generator import BASELINE, SyntheticDag, generate
 
 
 def kahn_generations(dag: SyntheticDag) -> list[int]:
+    # Count each node's dependencies: a node is ready once all of them are done.
     dependents: list[list[int]] = [[] for _ in range(dag.num_nodes)]
     unmet = [0] * dag.num_nodes
     for parent, child in zip(dag.parents.tolist(), dag.children.tolist()):
         dependents[parent].append(child)
         unmet[child] += 1
 
+    # Generation by generation: the roots form the first frontier, and completing a frontier
+    # releases the children whose last unmet dependency was in it. A node that is never
+    # released sits on a cycle.
     generation = [0] * dag.num_nodes
     frontier = [node for node in range(dag.num_nodes) if unmet[node] == 0]
     visited = 0
@@ -57,6 +61,17 @@ def test_edges_are_unique_and_ids_and_edge_order_are_shuffled() -> None:
     # Unshuffled, most parents have lower ids than their children and edges come sorted.
     assert 0.48 < (dag.parents < dag.children).mean() < 0.52
     assert 0.48 < (np.diff(dag.parents) > 0).mean() < 0.52
+
+
+def test_every_input_is_read_by_its_own_pipeline() -> None:
+    dag = generate(replace(BASELINE, nodes=10_000), seed=1)
+
+    own_edge = dag.pipeline[dag.parents] == dag.pipeline[dag.children]
+    readers_in_own_pipeline = np.bincount(dag.parents[own_edge], minlength=dag.num_nodes)
+    # In a single-level source pipeline, the inputs are also the pipeline's outputs.
+    single_level = np.array([pipeline.depth == 1 for pipeline in dag.pipelines])
+    inputs = (dag.generation == 0) & ~single_level[dag.pipeline]
+    assert (readers_in_own_pipeline[inputs] > 0).all()
 
 
 def test_pipeline_sizes_scale_with_the_square_root_of_the_node_count() -> None:
