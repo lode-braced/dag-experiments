@@ -1,0 +1,30 @@
+[project]
+name = "dag-experiments"
+version = "0.1.0"
+description = "Experiments comparing compiled execution plans and runtime evaluation for large DAGs"
+authors = [
+    { name = "Lode Rosseel", email = "lode.rosseel@cegeka.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "scipy>=1.18.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.4.0",
+    "pytest>=9.2.0",
+    "scipy-stubs>=1.18.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
