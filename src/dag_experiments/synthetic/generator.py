@@ -52,6 +52,7 @@ class GraphParams:
     span_p: float = 0.6
     hub_generation_decay: float = 2.0
     popularity_alpha: float = 1.3
+    side_output_fraction: float = 0.5
 
     @property
     def scaled_pipeline_size_median(self) -> float:
@@ -131,6 +132,9 @@ def generate(params: GraphParams = BASELINE, seed: int = 0) -> SyntheticDag:
         for _ in range(_extra_parent_count(params, rng)):
             parents.append(_extra_parent(child, layout, params, rng))
         edges.update((parent.id, child.id) for parent in parents)
+    # Children pick their parents, so nothing so far makes sure every node is read. Give
+    # inputs and most intermediate nodes that no child picked a consumer.
+    edges.update(_consumer_edges(edges, layout, params, rng))
     _check_guarantees(edges, layout.nodes)
 
     # Node ids are already in random order. Put the edges in random order too, so neither
@@ -426,6 +430,32 @@ def _hub_parent(
     ]
     generation = rng.choices(below, weights=weights)[0]
     return layout.generations[generation].draw(rng)
+
+
+def _consumer_edges(
+    edges: Collection[tuple[int, int]],
+    layout: _NodeLayout,
+    params: GraphParams,
+    rng: random.Random,
+) -> list[tuple[int, int]]:
+    """An edge to a consumer from each node no child picked as a parent that should be read."""
+    picked = {parent for parent, _ in edges}
+    consumer_edges = []
+    for node in layout.nodes:
+        pipeline = layout.pipelines[node.pipeline]
+        # A pipeline's last level holds its outputs: they need no consumer in the pipeline.
+        if node.id in picked or node.generation == pipeline.start + pipeline.depth - 1:
+            continue
+        # Inputs (generation 0) are loaded to be used, so they always get one. An intermediate
+        # node stays unread part of the time, as a side output such as a report or an export.
+        if node.generation > 0 and rng.random() < params.side_output_fraction:
+            continue
+        # The consumer is a random node one level up in the same pipeline. Extra roots sit
+        # below the pipeline's first level, so theirs is a node of that first level.
+        generation = max(node.generation + 1, pipeline.start)
+        consumer = rng.choice(layout.cells[node.pipeline, generation].nodes)
+        consumer_edges.append((node.id, consumer.id))
+    return consumer_edges
 
 
 # --- Distributions the random module lacks ---

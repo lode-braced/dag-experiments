@@ -59,6 +59,16 @@ def test_edges_are_unique_and_ids_and_edge_order_are_shuffled() -> None:
     assert 0.48 < (np.diff(dag.parents) > 0).mean() < 0.52
 
 
+def test_every_input_is_read() -> None:
+    dag = generate(replace(BASELINE, nodes=10_000), seed=1)
+
+    dependents = np.bincount(dag.parents, minlength=dag.num_nodes)
+    # In a single-level source pipeline, the inputs are also the pipeline's outputs.
+    single_level = np.array([pipeline.depth == 1 for pipeline in dag.pipelines])
+    inputs = (dag.generation == 0) & ~single_level[dag.pipeline]
+    assert (dependents[inputs] > 0).all()
+
+
 def test_pipeline_sizes_scale_with_the_square_root_of_the_node_count() -> None:
     dag = generate(replace(BASELINE, nodes=BASELINE.reference_nodes // 4))
 
