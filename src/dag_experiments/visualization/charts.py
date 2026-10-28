@@ -156,7 +156,7 @@ def upstreams(dag: SyntheticDag) -> Figure:
     set_title(
         ax,
         "Most pipelines consume one to three earlier pipelines",
-        f"1 + Poisson(1.5), weighted by √size, duplicate draws dropped · "
+        f"1 + Poisson(1.5) distinct pipelines, weighted by √size · "
         f"{len(dag.pipelines) - len(consumers):,} of {len(dag.pipelines):,} pipelines "
         f"are source pipelines with no upstream",
     )
@@ -248,7 +248,7 @@ def degree_distributions(dag: SyntheticDag) -> Figure:
     ax.legend(loc="upper right")
     set_title(
         ax,
-        "Most nodes have one to three dependencies; a few hubs have thousands of dependents",
+        "Most nodes have one to three dependencies; dependents have a long tail",
         f"Share of nodes with at least k · {(dependents == 0).mean():.0%} of nodes are sinks "
         f"and {(dependencies == 0).mean():.0%} are roots",
     )
