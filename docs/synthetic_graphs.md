@@ -52,8 +52,8 @@ All parameters are fields of `GraphParams`; the values below are the baseline.
   unrealistically large.
 - **Pipeline size at other node counts**: the median and the cap scale with √(nodes / 1.2M), so
   bigger graphs get both more and bigger pipelines. σ is already a relative spread and the 5-node
-  minimum stays. At 10k nodes this gives median 14 and cap 456 (362 pipelines); at 5M, median 306
-  and cap 10,206 (8,047 pipelines).
+  minimum stays. At 10k nodes this gives median 14 and cap 456 (363 pipelines); at 5M, median 306
+  and cap 10,206 (7,979 pipelines).
 - **Pipeline depth** (number of internal levels): round(1.5 × log₂(size) + Normal(0, 1)), clipped
   to 1–(size − 1). Bigger pipelines are deeper, but depth grows slowly with size: 150 nodes gives
   about 11 levels, 5,000 about 18.
@@ -63,8 +63,9 @@ All parameters are fields of `GraphParams`; the values below are the baseline.
   of its main (first) upstream, because it consumes the output of some step there. Total graph
   depth comes out of this stacking; it is not set directly.
 - **Maximum depth**: 150 generations, only as a trim: pipelines that would go past it are shifted
-  earlier or shortened. Graphs of up to 5M nodes stay below it (92–127 generations at 5M over seeds
-  0–2). A tight cap (for example 30) piles nodes into the last generations instead of leaving a
+  earlier or shortened. Graphs of up to 5M nodes mostly stay below it: at 5M, seeds 0 and 2 reach
+  113 generations, and seed 1 reaches the cap, which trims 4 of its 8,289 pipelines (0.25% of the
+  nodes). A tight cap (for example 30) piles nodes into the last generations instead of leaving a
   thin tail.
 
 ![Pipelines by size, and nodes by the size of their pipeline](images/pipeline_sizes.png)
@@ -78,7 +79,7 @@ Half of the pipelines have fewer than 150 nodes, but together they hold only 12%
 ![The deepest pipeline and its chain of main upstreams](images/stacking.png)
 
 Each pipeline starts right after some level of its main upstream, so depth adds up along a chain
-of main upstreams. In the baseline, 13 stacked pipelines reach generation 98.
+of main upstreams. In the baseline, 12 stacked pipelines reach generation 93.
 
 ### Nodes per level
 
@@ -128,9 +129,10 @@ little left to distribute.
 ![Three small pipelines from the baseline graph, node by node](images/example_pipelines.png)
 
 Three small pipelines from the baseline graph. The source pipeline starts with a wide level of
-raw-input roots, all read by its two level-1 transformations. The other two sit on top of an upstream pipeline: the gray column just before
-their first level is the main upstream's level that feeds it, their extra roots at generation 0
-feed later levels, and the gray parents further left are other upstream levels or global hubs.
+raw-input roots, all read by its few level-1 transformations. The other two sit on top of an
+upstream pipeline: the gray column just before their first level is the main upstream's level
+that feeds it, their extra root at generation 0 feeds their early levels, and the gray parents
+further left are other upstream levels or global hubs.
 
 ### Finishing
 
@@ -145,21 +147,21 @@ estimated on samples of 1,000 nodes and 2,000 edges.
 
 | Statistic                           | Baseline                                      |
 |-------------------------------------|-----------------------------------------------|
-| Edges                               | 2,938,038 (2.45 per node)                     |
-| Dependencies per non-root           | mean 2.59, p50 2, p99 10, max 163             |
-| Dependents per node                 | p50 1, p99 19, max 2,808                      |
-| Roots / sinks                       | 5.3% / 17.0%                                  |
-| Generations                         | 99                                            |
-| Nodes in generation 0               | 64,197                                        |
-| Nodes in the median generation      | 3,194 (3.2k–9.1k over seeds 0–3)              |
-| Nodes in the last three generations | 17, 16, 7                                     |
+| Edges                               | 2,936,830 (2.45 per node)                     |
+| Dependencies per non-root           | mean 2.59, p50 2, p99 10, max 159             |
+| Dependents per node                 | p50 1, p99 19, max 3,428                      |
+| Roots / sinks                       | 5.5% / 17.0%                                  |
+| Generations                         | 94                                            |
+| Nodes in generation 0               | 65,701                                        |
+| Nodes in the median generation      | 6,840 (3.6k–7.9k over seeds 0–3)              |
+| Nodes in the last three generations | 12, 17, 12                                    |
 | Edges to the previous generation    | 67%                                           |
-| Edges skipping more than 5          | 13%                                           |
+| Edges skipping more than 5          | 14%                                           |
 | Edges inside a pipeline             | 83%                                           |
 | Largest weakly connected part       | 100% of nodes                                 |
-| Downstream spread, random node      | p50 23, p90 2,522, p99 30,585                 |
-| Downstream spread, top 5 hubs       | 37%, 44%, 24%, 23%, 31% of the graph          |
-| Redundant edges (A→C next to A→B→C) | 10% (11.0% on a 10k-edge sample)              |
+| Downstream spread, random node      | p50 21, p90 2,311, p99 49,694                 |
+| Downstream spread, top 5 hubs       | 52%, 46%, 31%, 39%, 28% of the graph          |
+| Redundant edges (A→C next to A→B→C) | 11% (10.8% on a 10k-edge sample)              |
 
 ![Nodes per generation](images/nodes_per_generation.png)
 
@@ -175,20 +177,22 @@ Same parameters, only the node count changed, on an Apple M5 Pro with 24 GB:
 
 | Nodes     | Pipelines | Edges      | Edges per node | Generations | Seconds |
 |-----------|-----------|------------|----------------|-------------|---------|
-| 10,000    | 362       | 20,932     | 2.09           | 47          | 0.0     |
-| 100,000   | 1,232     | 225,817    | 2.26           | 70          | 0.1     |
-| 1,200,000 | 4,009     | 2,938,038  | 2.45           | 99          | 1.2     |
-| 5,000,000 | 8,047     | 12,609,585 | 2.52           | 127         | 6.2     |
+| 10,000    | 363       | 20,789     | 2.08           | 42          | 0.0     |
+| 100,000   | 1,130     | 230,988    | 2.31           | 68          | 0.6     |
+| 1,200,000 | 3,962     | 2,936,830  | 2.45           | 94          | 12.2    |
+| 5,000,000 | 7,979     | 12,633,310 | 2.53           | 113         | 61.8    |
 
-Time grows linearly. Smaller graphs have smaller pipelines, which changes their shape a little:
+The generator is plain Python, written to be read rather than to be fast. Time grows a little
+faster than the node count, from 6 µs per node at 100k nodes to 12 µs at 5M. Smaller graphs have
+smaller pipelines, which changes their shape a little:
 
-- Level 0 of source pipelines holds a bigger share of the nodes, so roots rise to 8.1% at 10k
+- Level 0 of source pipelines holds a bigger share of the nodes, so roots rise to 9.1% at 10k
   nodes (4.7% at 5M).
-- Levels are smaller, so repeated parent picks collapse into one edge more often: 20% of drawn
+- Levels are smaller, so repeated parent picks collapse into one edge more often: 19% of drawn
   edges are duplicates at 10k nodes, 10% at 1.2M.
 
-Together this drops edges per node to 2.09 at 10k nodes. Generations grow with size, because there
+Together this drops edges per node to 2.08 at 10k nodes. Generations grow with size, because there
 are more pipelines to stack and bigger pipelines are deeper. At a given size the seed matters
-about as much: 92–127 generations at 5M over seeds 0–2. Peak memory is
-about 0.75 GB at 1.2M nodes and 2.9 GB at 5M, mostly temporary arrays while drawing parents; the
-finished graph takes 33 MB and 141 MB.
+about as much: 113–150 generations at 5M over seeds 0–2. Peak memory is about 0.9 GB at 1.2M
+nodes and 3.6 GB at 5M, almost all of it Python objects while building; the finished graph's
+arrays take 33 MB and 141 MB.

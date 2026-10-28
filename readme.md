@@ -27,15 +27,15 @@ the baseline graph of 1.2M nodes and 2.9M edges:
 
 - **Many small pipelines, a few large ones**: half of the 4,000 pipelines have fewer than 150
   nodes, and the largest have 5,000.
-- **Many inputs**: generation 0 is the widest, with 5% of the nodes. Most are raw tables at the
+- **Many inputs**: generation 0 is the widest, with 5.5% of the nodes. Most are raw tables at the
   start of a source pipeline, read by a few transformations.
-- **Wide early, with a long thin tail**: pipelines build on the outputs of earlier ones, so 91% of
-  the nodes sit in the first 40 of 99 generations.
+- **Wide early, with a long thin tail**: pipelines build on the outputs of earlier ones, so 87% of
+  the nodes sit in the first 40 of 94 generations.
 - **Mostly local edges**: 83% of the edges stay inside a pipeline, and two thirds go to the
   previous generation.
-- **Few dependencies, a long tail of dependents**: 83% of the nodes with dependencies have one to
-  three, while the top hubs (dimension tables, calendars, config) have up to about 2,800
-  dependents.
+- **Few dependencies, a long tail of dependents**: 82% of the nodes with dependencies have one to
+  three, while the top hubs (simulating dimension tables, calendars, config) have up to about
+  3,400 dependents.
 - **Sinks are outputs**: the 17% of nodes that nothing reads are pipeline outputs and side outputs
   such as reports and exports.
 
