@@ -438,18 +438,30 @@ def _consumer_edges(
     params: GraphParams,
     rng: random.Random,
 ) -> list[tuple[int, int]]:
-    """An edge to a consumer from each node no child picked as a parent that should be read."""
-    picked = {parent for parent, _ in edges}
+    """An edge to a consumer from each node that no child reads but that should be read."""
+    read = {parent for parent, _ in edges}
+    read_by_own_pipeline = {
+        parent
+        for parent, child in edges
+        if layout.nodes[parent].pipeline == layout.nodes[child].pipeline
+    }
     consumer_edges = []
     for node in layout.nodes:
         pipeline = layout.pipelines[node.pipeline]
         # A pipeline's last level holds its outputs: they need no consumer in the pipeline.
-        if node.id in picked or node.generation == pipeline.start + pipeline.depth - 1:
+        if node.generation == pipeline.start + pipeline.depth - 1:
             continue
-        # Inputs (generation 0) are loaded to be used, so they always get one. An intermediate
-        # node stays unread part of the time, as a side output such as a report or an export.
-        if node.generation > 0 and rng.random() < params.side_output_fraction:
-            continue
+        if node.generation == 0:
+            # Inputs are loaded for their own pipeline, so they count as read only when a
+            # node of that pipeline reads them. Unread, they always get a consumer.
+            if node.id in read_by_own_pipeline:
+                continue
+        else:
+            # Any other node counts as read by any child, which may be a later pipeline
+            # using it as an output. Unread, it stays that way part of the time, as a side
+            # output such as a report or an export.
+            if node.id in read or rng.random() < params.side_output_fraction:
+                continue
         # The consumer is a random node one level up in the same pipeline. Extra roots sit
         # below the pipeline's first level, so theirs is a node of that first level.
         generation = max(node.generation + 1, pipeline.start)
