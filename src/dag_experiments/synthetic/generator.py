@@ -402,11 +402,10 @@ def _upstream_parent(child: _Node, layout: _NodeLayout, rng: random.Random) -> _
     if pipeline.is_source:
         return layout.cells[child.pipeline, 0].draw(rng)
 
-    # A non-main upstream may start at or after the child's generation; the main upstream
-    # never does.
-    upstream = rng.choice(pipeline.upstreams)
-    if layout.pipelines[upstream].start >= child.generation:
-        upstream = pipeline.upstreams[0]
+    # Only upstreams that start below the child have a level it can read. The main upstream
+    # always does: the pipeline starts right after one of its levels.
+    readable = [u for u in pipeline.upstreams if layout.pipelines[u].start < child.generation]
+    upstream = rng.choice(readable)
 
     # The upstream's levels that sit below the child
     lowest = layout.pipelines[upstream].start
