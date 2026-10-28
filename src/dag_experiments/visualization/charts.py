@@ -122,13 +122,13 @@ def nodes_per_level(dag: SyntheticDag) -> Figure:
     fig, (by_size, source) = plt.subplots(1, 2, figsize=(9, 4), layout="constrained")
     for color, size in zip(SERIES, (10, 150, 5000)):
         depth = round(typical_depth(size))
-        shares = (1 + (size - depth) * level_shares(depth, False, BASELINE)) / size
+        shares = [(1 + (size - depth) * share) / size for share in level_shares(depth, False, BASELINE)]
         by_size.plot(shares, color=color, label=f"{size:,} nodes, {depth} levels")
     set_title(by_size, "Wide near the inputs, narrow at the outputs", "(ℓ + 1) · e^(−ℓ/θ), θ = max(1, depth/3)")
 
     size, depth = 150, round(typical_depth(150))
     for color, is_source, label in ((SERIES[0], False, "other pipelines"), (SERIES[1], True, "source pipelines")):
-        shares = (1 + (size - depth) * level_shares(depth, is_source, BASELINE)) / size
+        shares = [(1 + (size - depth) * share) / size for share in level_shares(depth, is_source, BASELINE)]
         source.plot(shares, color=color, label=label)
     set_title(source, "Source pipelines read many raw tables", "Level 0 gets 3× the weight: 150 nodes, 11 levels")
 

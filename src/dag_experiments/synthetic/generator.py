@@ -9,14 +9,17 @@ that make the planned generation the real one:
 The readme explains the reasoning behind each parameter.
 """
 
+import itertools
 import math
+import random
+from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
 
 type IntArray = npt.NDArray[np.int64]
-type FloatArray = npt.NDArray[np.float64]
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,7 @@ BASELINE = GraphParams()
 @dataclass(frozen=True)
 class Pipeline:
     start: int  # generation of local level 0
-    level_sizes: IntArray  # nodes per local level
+    level_sizes: list[int]  # nodes per local level
     extra_roots: int  # nodes placed at generation 0 (seed, lookup or static data)
     upstreams: list[int]  # main upstream first; empty for source pipelines
 
@@ -83,7 +86,7 @@ class Pipeline:
 
     @property
     def size(self) -> int:
-        return int(self.level_sizes.sum()) + self.extra_roots
+        return sum(self.level_sizes) + self.extra_roots
 
 
 @dataclass(frozen=True)
@@ -111,43 +114,50 @@ class SyntheticDag:
 
 
 def generate(params: GraphParams = BASELINE, seed: int = 0) -> SyntheticDag:
-    rng = np.random.default_rng(seed)
+    rng = random.Random(seed)
     # Plan at the pipeline level first (sizes, levels, start generations, upstreams), then
-    # number the nodes so the nodes of one pipeline at one generation form a range of ids:
-    # the edge code draws most parents from such a range.
+    # create the nodes that plan asks for, grouped the ways the edge code draws parents.
     pipelines = _plan_pipelines(params, rng)
-    layout = _NodeLayout.build(pipelines, params.max_generations)
-    # How attractive each node is as a parent. Heavy-tailed, so a few nodes become hubs.
-    popularity = rng.pareto(params.popularity_alpha, layout.num_nodes) + 1
+    layout = _NodeLayout.build(pipelines, params, rng)
 
     # Every non-root gets one parent exactly one generation lower, which pins its
-    # generation, plus a random number of extra parents from lower generations.
-    children = np.flatnonzero(layout.generation > 0)
-    fixing_parents = _level_fixing_parents(children, layout, popularity, rng)
-    extra_children, extra_parents = _extra_parents(children, layout, popularity, params, rng)
+    # generation, plus a random number of extra parents from lower generations. Separate
+    # draws can pick the same parent for a node more than once; the set keeps one edge.
+    edges: set[tuple[int, int]] = set()
+    for child in layout.nodes:
+        if child.generation == 0:
+            continue
+        parents = [_level_fixing_parent(child, layout, rng)]
+        for _ in range(_extra_parent_count(params, rng)):
+            parents.append(_extra_parent(child, layout, params, rng))
+        edges.update((parent.id, child.id) for parent in parents)
+    _check_guarantees(edges, layout.nodes)
 
-    parents = np.concatenate([fixing_parents, extra_parents])
-    children = np.concatenate([children, extra_children])
-    # Separate draws can pick the same parent for a node more than once; keep one edge.
-    parents, children = _deduplicate(parents, children, layout.num_nodes)
-
-    # Hide the construction order in the ids, then verify the generation guarantees.
-    dag = _shuffle(parents, children, layout, pipelines, rng)
-    _check_guarantees(dag)
-    return dag
+    # Node ids are already in random order. Put the edges in random order too, so neither
+    # reveals the topological order. Sorting first makes the order depend on the seed
+    # alone, not on how the set happens to store its edges.
+    edge_list = sorted(edges)
+    rng.shuffle(edge_list)
+    return SyntheticDag(
+        parents=np.array([parent for parent, _ in edge_list], dtype=np.int32),
+        children=np.array([child for _, child in edge_list], dtype=np.int32),
+        generation=np.array([node.generation for node in layout.nodes], dtype=np.int32),
+        pipeline=np.array([node.pipeline for node in layout.nodes], dtype=np.int32),
+        pipelines=pipelines,
+    )
 
 
 # --- Planning pipelines and generations ---
 
 
-def _plan_pipelines(params: GraphParams, rng: np.random.Generator) -> list[Pipeline]:
-    sizes = _pipeline_sizes(params, rng)
-    # Weight of each pipeline when later pipelines pick their upstreams.
-    upstream_weight = np.zeros(len(sizes))
+def _plan_pipelines(params: GraphParams, rng: random.Random) -> list[Pipeline]:
     pipelines: list[Pipeline] = []
+    # Earlier pipelines that later ones can consume, with their weight as an upstream:
+    # √size, because popular pipelines get consumed more.
+    consumable: dict[int, float] = {}
 
-    for index, size in enumerate(sizes):
-        depth = int(np.clip(round(typical_depth(size) + rng.normal()), 1, size - 1))
+    for index, size in enumerate(_pipeline_sizes(params, rng)):
+        depth = min(max(round(typical_depth(size) + rng.gauss()), 1), size - 1)
         is_source = index == 0 or rng.random() < params.source_pipeline_fraction
         if is_source:
             # Source pipelines read raw inputs: no upstreams, starting at generation 0.
@@ -156,9 +166,9 @@ def _plan_pipelines(params: GraphParams, rng: np.random.Generator) -> list[Pipel
         else:
             # Pick the upstreams, then start one generation after a random level of the main
             # (first) upstream, as if consuming the output of that step.
-            upstreams = _pick_upstreams(upstream_weight[:index], params, rng)
+            upstreams = _pick_upstreams(consumable, params, rng)
             main = pipelines[upstreams[0]]
-            start = main.start + 1 + int(rng.integers(main.depth))
+            start = main.start + 1 + rng.randrange(main.depth)
             if start + depth > params.max_generations:
                 # Past the generation cap: start after an earlier level of the main upstream,
                 # and if even its first level is too late, trim this pipeline's depth so its
@@ -167,25 +177,27 @@ def _plan_pipelines(params: GraphParams, rng: np.random.Generator) -> list[Pipel
                 depth = min(depth, params.max_generations - start)
             # Non-source pipelines can have roots too: external inputs (seed, lookup or static
             # data) pulled in by this pipeline alone.
-            extra_roots = min(rng.binomial(size, params.extra_root_fraction), size - depth)
+            extra_roots = min(rng.binomialvariate(size, params.extra_root_fraction), size - depth)
         level_sizes = _level_sizes(size - extra_roots, depth, is_source, params, rng)
         pipelines.append(Pipeline(start, level_sizes, extra_roots, upstreams))
 
         # A pipeline starting at the last allowed generation leaves no room to consume it.
         if start < params.max_generations - 1:
-            upstream_weight[index] = np.sqrt(size)
+            consumable[index] = math.sqrt(size)
 
     return pipelines
 
 
-def _pipeline_sizes(params: GraphParams, rng: np.random.Generator) -> list[int]:
+def _pipeline_sizes(params: GraphParams, rng: random.Random) -> list[int]:
     # Draw sizes until the node budget is used up. When the leftover would be too small
     # for a pipeline of its own, the current pipeline takes it, so sizes sum to `nodes`.
     sizes = []
     remaining = params.nodes
     while remaining > 0:
-        drawn = rng.lognormal(np.log(params.scaled_pipeline_size_median), params.pipeline_size_sigma)
-        size = int(np.clip(round(drawn), params.pipeline_size_min, params.scaled_pipeline_size_max))
+        drawn = rng.lognormvariate(
+            math.log(params.scaled_pipeline_size_median), params.pipeline_size_sigma
+        )
+        size = min(max(round(drawn), params.pipeline_size_min), params.scaled_pipeline_size_max)
         if remaining - size < params.pipeline_size_min:
             size = remaining
         sizes.append(size)
@@ -193,10 +205,19 @@ def _pipeline_sizes(params: GraphParams, rng: np.random.Generator) -> list[int]:
     return sizes
 
 
-def _pick_upstreams(weight: FloatArray, params: GraphParams, rng: np.random.Generator) -> list[int]:
+def _pick_upstreams(
+    consumable: dict[int, float], params: GraphParams, rng: random.Random
+) -> list[int]:
     """Distinct earlier pipelines, picked by weight; the first pick is the main upstream."""
-    count = min(1 + rng.poisson(params.extra_upstreams_mean), np.count_nonzero(weight))
-    return rng.choice(len(weight), size=count, replace=False, p=weight / weight.sum()).tolist()
+    candidates = dict(consumable)
+    count = min(1 + _poisson(params.extra_upstreams_mean, rng), len(candidates))
+    upstreams = []
+    for _ in range(count):
+        # Each pick leaves the candidates, so the next pick is a different pipeline.
+        picked = rng.choices(list(candidates), weights=list(candidates.values()))[0]
+        upstreams.append(picked)
+        del candidates[picked]
+    return upstreams
 
 
 def typical_depth(size: float) -> float:
@@ -204,290 +225,245 @@ def typical_depth(size: float) -> float:
     return 1.5 * math.log2(size)
 
 
-def level_shares(depth: int, is_source: bool, params: GraphParams) -> FloatArray:
+def level_shares(depth: int, is_source: bool, params: GraphParams) -> list[float]:
     """Share of a pipeline's nodes at each local level, on top of one node per level."""
-    level = np.arange(depth)
     # (level + 1) grows and e^(-level / theta) decays, so shares peak at level theta - 1
     # and taper toward the outputs. Theta grows with depth: deeper pipelines stay wide longer.
     theta = max(1.0, depth / 3)
-    weights = (level + 1) * np.exp(-level / theta)
+    weights = [(level + 1) * math.exp(-level / theta) for level in range(depth)]
     # Source pipelines start with many raw tables feeding a few transformations.
     if is_source:
         weights[0] *= params.source_level0_boost
-    return weights / weights.sum()
+    total = sum(weights)
+    return [weight / total for weight in weights]
 
 
 def _level_sizes(
-    nodes: int, depth: int, is_source: bool, params: GraphParams, rng: np.random.Generator
-) -> IntArray:
+    nodes: int, depth: int, is_source: bool, params: GraphParams, rng: random.Random
+) -> list[int]:
     # One node per level is required: it is the level-fixing parent of the next level.
-    # The remaining nodes are spread over the levels at random, following the shares.
-    return 1 + rng.multinomial(nodes - depth, level_shares(depth, is_source, params))
+    # Each remaining node goes to a random level, following the shares.
+    shares = level_shares(depth, is_source, params)
+    levels = rng.choices(range(depth), weights=shares, k=nodes - depth)
+    return [1 + levels.count(level) for level in range(depth)]
+
+
+# --- Nodes ---
+
+
+@dataclass(frozen=True)
+class _Node:
+    id: int
+    pipeline: int  # index into the list of pipelines
+    generation: int
+    # How attractive the node is as a parent. Heavy-tailed, so a few nodes become hubs.
+    popularity: float
+
+
+@dataclass(frozen=True)
+class _Pool:
+    """Nodes to draw a parent from, each with a chance proportional to its popularity."""
+
+    nodes: list[_Node]
+    # Running total of popularity. With it, random.choices finds the drawn node with a
+    # binary search instead of adding up all weights again on every draw, which would be
+    # slow for the thousands of nodes at generation 0.
+    cumulative_popularity: list[float]
+
+    @classmethod
+    def of(cls, nodes: list[_Node]) -> "_Pool":
+        return cls(nodes, list(itertools.accumulate(node.popularity for node in nodes)))
+
+    @property
+    def total_popularity(self) -> float:
+        return self.cumulative_popularity[-1]
+
+    def draw(self, rng: random.Random) -> _Node:
+        return rng.choices(self.nodes, cum_weights=self.cumulative_popularity)[0]
 
 
 @dataclass(frozen=True)
 class _NodeLayout:
-    """The planned nodes, numbered so the edge code can quickly find candidate parents.
+    """The planned nodes, grouped the two ways the edge code draws a parent:
 
-    A parent is drawn in one of two ways:
-
-    1. From the nodes of one pipeline at one generation, a cell: the main upstream one
+    1. From a cell, the nodes of one pipeline at one generation: the main upstream one
        generation lower, the same pipeline `span` generations back, or the pipeline's
        roots at generation 0.
     2. As a global hub, from all nodes below the child's generation.
-
-    Numbering the nodes in (pipeline, generation) order gives each cell consecutive ids,
-    `count[p, g]` of them starting at `first[p, g]`. Drawing from a cell is then picking
-    an id from a range, which numpy does for all children in one call. Hubs don't use the
-    cells, only `generation` per node. The per-pipeline arrays hold the plan in the same
-    array form, so the edge code can look them up for all children at once too.
     """
 
-    generation: IntArray  # per node
-    pipeline: IntArray
-    first: IntArray  # [pipeline, generation]: id of the cell's first node
-    count: IntArray  # [pipeline, generation]: number of nodes in the cell, 0 if none
-    start: IntArray  # per pipeline from here on
-    depth: IntArray
-    is_source: npt.NDArray[np.bool_]
-    upstreams: IntArray  # [pipeline, i]: its i-th upstream, main first; -1 pads shorter lists
-    upstream_count: IntArray
-
-    @property
-    def num_nodes(self) -> int:
-        return len(self.generation)
-
-    @property
-    def main_upstream(self) -> IntArray:
-        """Per pipeline; -1 for source pipelines."""
-        return self.upstreams[:, 0]
+    pipelines: list[Pipeline]
+    nodes: list[_Node]  # node i has id i
+    cells: dict[tuple[int, int], _Pool]  # by (pipeline, generation)
+    generations: dict[int, _Pool]
 
     @classmethod
-    def build(cls, pipelines: list[Pipeline], max_generations: int) -> "_NodeLayout":
-        # Count the nodes of each pipeline at each generation. Generation 0 holds a pipeline's
+    def build(
+        cls, pipelines: list[Pipeline], params: GraphParams, rng: random.Random
+    ) -> "_NodeLayout":
+        # The planned (pipeline, generation) of every node. Generation 0 holds a pipeline's
         # roots: level 0 of a source pipeline, or the extra roots of any other pipeline. Those
         # start at generation 1 or later, so their extra roots never share a cell with a level.
-        count = np.zeros((len(pipelines), max_generations), dtype=np.int64)
+        planned: list[tuple[int, int]] = []
         for index, pipeline in enumerate(pipelines):
-            count[index, pipeline.start : pipeline.start + pipeline.depth] = pipeline.level_sizes
-            count[index, 0] += pipeline.extra_roots
+            planned += [(index, 0)] * pipeline.extra_roots
+            for level, size in enumerate(pipeline.level_sizes):
+                planned += [(index, pipeline.start + level)] * size
 
-        # Number the nodes cell by cell, row by row: a cell's first id is the number of nodes
-        # in all cells before it. Each node's pipeline and generation are its cell's row and
-        # column.
-        first = (np.cumsum(count) - count.ravel()).reshape(count.shape)
-        cell = np.repeat(np.arange(count.size), count.ravel())
+        # A node's id is its position in a random order, so ids say nothing about the
+        # topological order. Otherwise sorts that happen to follow id order look faster.
+        rng.shuffle(planned)
+        nodes = [
+            _Node(position, pipeline, generation, rng.paretovariate(params.popularity_alpha))
+            for position, (pipeline, generation) in enumerate(planned)
+        ]
 
-        # Upstream lists differ in length, so pad them with -1 into one table. It keeps at
-        # least one column, so the main upstream column exists even without upstreams.
-        upstream_count = np.array([len(p.upstreams) for p in pipelines])
-        upstreams = np.full((len(pipelines), max(1, upstream_count.max())), -1)
-        for index, pipeline in enumerate(pipelines):
-            upstreams[index, : len(pipeline.upstreams)] = pipeline.upstreams
-
+        # Group the nodes per cell and per generation, the two ways parents are drawn.
+        cells: defaultdict[tuple[int, int], list[_Node]] = defaultdict(list)
+        generations: defaultdict[int, list[_Node]] = defaultdict(list)
+        for node in nodes:
+            cells[node.pipeline, node.generation].append(node)
+            generations[node.generation].append(node)
         return cls(
-            generation=cell % max_generations,
-            pipeline=cell // max_generations,
-            first=first,
-            count=count,
-            start=np.array([p.start for p in pipelines]),
-            depth=np.array([p.depth for p in pipelines]),
-            is_source=np.array([p.is_source for p in pipelines]),
-            upstreams=upstreams,
-            upstream_count=upstream_count,
+            pipelines=pipelines,
+            nodes=nodes,
+            cells={key: _Pool.of(members) for key, members in cells.items()},
+            generations={key: _Pool.of(members) for key, members in generations.items()},
         )
 
 
 # --- Edges ---
 
-# Where an extra parent comes from
-_SAME_PIPELINE, _UPSTREAM, _HUB = 0, 1, 2
+
+def _level_fixing_parent(child: _Node, layout: _NodeLayout, rng: random.Random) -> _Node:
+    """A parent exactly one generation lower, picked by popularity."""
+    pipeline = layout.pipelines[child.pipeline]
+    # Nodes on a pipeline's first level take the parent from the main upstream, all others
+    # from their own pipeline's previous level.
+    if child.generation == pipeline.start:
+        host = pipeline.upstreams[0]
+    else:
+        host = child.pipeline
+    return layout.cells[host, child.generation - 1].draw(rng)
 
 
-def _level_fixing_parents(
-    children: IntArray, layout: _NodeLayout, popularity: FloatArray, rng: np.random.Generator
-) -> IntArray:
-    """One parent exactly one generation lower per child, picked by popularity."""
-    pipeline = layout.pipeline[children]
-    generation = layout.generation[children]
-    # Nodes on a pipeline's first level take the parent from the main upstream.
-    on_first_level = generation == layout.start[pipeline]
-    host = np.where(on_first_level, layout.main_upstream[pipeline], pipeline)
-    return _pick_in_cells(host, generation - 1, layout, popularity, rng)
+def _extra_parent_count(params: GraphParams, rng: random.Random) -> int:
+    # Wide joins and unions get 5-200 extra parents (log-uniform). Every other node gets
+    # a geometric number with mean 1.2, so 45% get none.
+    if rng.random() < params.wide_join_fraction:
+        log_parents = rng.uniform(
+            math.log(params.wide_join_min_parents), math.log(params.wide_join_max_parents)
+        )
+        return round(math.exp(log_parents))
+    return _geometric(1 / (1 + params.extra_parents_mean), rng) - 1
 
 
-def _extra_parents(
-    children: IntArray,
-    layout: _NodeLayout,
-    popularity: FloatArray,
-    params: GraphParams,
-    rng: np.random.Generator,
-) -> tuple[IntArray, IntArray]:
-    # How many extra parents each child gets: geometric with mean 1.2 (45% get none),
-    # except wide joins and unions, which get 5-200 (log-uniform).
-    count = rng.geometric(1 / (1 + params.extra_parents_mean), len(children)) - 1
-    wide_join = rng.random(len(children)) < params.wide_join_fraction
-    log_parents = rng.uniform(
-        np.log(params.wide_join_min_parents),
-        np.log(params.wide_join_max_parents),
-        wide_join.sum(),
-    )
-    count[wide_join] = np.round(np.exp(log_parents))
+def _extra_parent(
+    child: _Node, layout: _NodeLayout, params: GraphParams, rng: random.Random
+) -> _Node:
+    # Where the parent comes from: mostly the child's own pipeline, sometimes an upstream
+    # pipeline or a global hub.
+    source = rng.choices(
+        ["same pipeline", "upstream", "hub"],
+        weights=[params.same_pipeline_share, params.upstream_share, params.hub_share],
+    )[0]
+    if source == "same pipeline":
+        return _same_pipeline_parent(child, layout, params, rng)
+    if source == "upstream":
+        return _upstream_parent(child, layout, rng)
+    return _hub_parent(child, layout, params, rng)
 
-    # From here on, one entry per extra parent to draw. `kind` says where it comes from;
-    # `from_pipeline` and `from_generation` collect the cell to pick it from.
-    children = np.repeat(children, count)
-    n = len(children)
-    pipeline = layout.pipeline[children]
-    generation = layout.generation[children]
-    shares = [params.same_pipeline_share, params.upstream_share, params.hub_share]
-    kind = rng.choice(3, size=n, p=shares)
-    from_pipeline = pipeline.copy()
-    from_generation = np.full(n, -1)
 
-    # Same pipeline: reach back `span` generations, mostly one, sometimes more.
-    span = rng.geometric(params.span_p, n)
-    target = generation - span
-    in_pipeline = (kind == _SAME_PIPELINE) & (target >= layout.start[pipeline])
-    from_generation[in_pipeline] = target[in_pipeline]
+def _same_pipeline_parent(
+    child: _Node, layout: _NodeLayout, params: GraphParams, rng: random.Random
+) -> _Node:
+    """A parent `span` generations back in the child's pipeline: mostly one, sometimes more."""
+    pipeline = layout.pipelines[child.pipeline]
+    target = child.generation - _geometric(params.span_p, rng)
+    if target >= pipeline.start:
+        return layout.cells[child.pipeline, target].draw(rng)
 
     # Reaching below the pipeline's first level: source pipelines read their raw inputs
     # (level 0); others use their extra roots half the time, else an upstream. Either way
     # the roots are the pipeline's nodes at generation 0.
-    below = (kind == _SAME_PIPELINE) & ~in_pipeline
-    has_roots = layout.count[pipeline, 0] > 0
-    use_roots = below & (layout.is_source[pipeline] | (has_roots & (rng.random(n) < 0.5)))
-    from_generation[use_roots] = 0
-    kind[below & ~use_roots] = _UPSTREAM
+    if pipeline.is_source or (pipeline.extra_roots > 0 and rng.random() < 0.5):
+        return layout.cells[child.pipeline, 0].draw(rng)
+    return _upstream_parent(child, layout, rng)
 
+
+def _upstream_parent(child: _Node, layout: _NodeLayout, rng: random.Random) -> _Node:
+    """A random upstream of the child's pipeline, at a uniformly random level below the child."""
+    pipeline = layout.pipelines[child.pipeline]
     # Source pipelines have no upstream pipelines: they read their raw inputs instead.
-    from_raw = (kind == _UPSTREAM) & layout.is_source[pipeline]
-    from_generation[from_raw] = 0
-    from_upstream = (kind == _UPSTREAM) & ~layout.is_source[pipeline]
-    from_pipeline[from_upstream], from_generation[from_upstream] = _upstream_levels(
-        pipeline[from_upstream], generation[from_upstream], layout, rng
-    )
+    if pipeline.is_source:
+        return layout.cells[child.pipeline, 0].draw(rng)
 
-    # Global hubs come from the whole graph; all other parents from their chosen cell.
-    hub = kind == _HUB
-    parents = np.empty(n, dtype=np.int64)
-    parents[~hub] = _pick_in_cells(
-        from_pipeline[~hub], from_generation[~hub], layout, popularity, rng
-    )
-    parents[hub] = _pick_hubs(generation[hub], layout, popularity, params, rng)
-    return children, parents
+    # A non-main upstream may start at or after the child's generation; the main upstream
+    # never does.
+    upstream = rng.choice(pipeline.upstreams)
+    if layout.pipelines[upstream].start >= child.generation:
+        upstream = pipeline.upstreams[0]
+
+    # The upstream's levels that sit below the child
+    lowest = layout.pipelines[upstream].start
+    highest = min(lowest + layout.pipelines[upstream].depth - 1, child.generation - 1)
+    return layout.cells[upstream, rng.randint(lowest, highest)].draw(rng)
 
 
-def _upstream_levels(
-    pipeline: IntArray, generation: IntArray, layout: _NodeLayout, rng: np.random.Generator
-) -> tuple[IntArray, IntArray]:
-    """A random upstream of each pipeline, at a uniformly random level below `generation`."""
-    # A random position within each pipeline's list of upstreams
-    position = (rng.random(len(pipeline)) * layout.upstream_count[pipeline]).astype(np.int64)
-    upstream = layout.upstreams[pipeline, position]
-    # A non-main upstream may start at or after `generation`; the main upstream never does.
-    upstream = np.where(
-        layout.start[upstream] < generation, upstream, layout.main_upstream[pipeline]
-    )
-    # The upstream's levels that sit below `generation`
-    lowest = layout.start[upstream]
-    highest = np.minimum(lowest + layout.depth[upstream] - 1, generation - 1)
-    level_generation = lowest + (rng.random(len(pipeline)) * (highest - lowest + 1)).astype(np.int64)
-    return upstream, level_generation
-
-
-def _pick_in_cells(
-    pipeline: IntArray,
-    generation: IntArray,
-    layout: _NodeLayout,
-    popularity: FloatArray,
-    rng: np.random.Generator,
-) -> IntArray:
-    """One node of each `pipeline` at `generation`, chosen proportionally to popularity."""
-    # A cell's nodes have consecutive ids, so picking within a cell is picking within
-    # a range of ids.
-    low = layout.first[pipeline, generation]
-    high = low + layout.count[pipeline, generation]
-    assert (generation >= 0).all() and (high > low).all(), "no nodes to pick from"
-    cumulative = np.concatenate([[0.0], np.cumsum(popularity)])
-    return _pick_weighted(cumulative, low, high, rng)
-
-
-def _pick_hubs(
-    generation: IntArray,
-    layout: _NodeLayout,
-    popularity: FloatArray,
-    params: GraphParams,
-    rng: np.random.Generator,
-) -> IntArray:
-    """Any node below `generation`, weighted by popularity × e^(−generation / decay)."""
-    # Sorted by generation, "all nodes below generation L" is a prefix of the order.
-    by_generation = np.argsort(layout.generation, kind="stable")
-    sorted_generation = layout.generation[by_generation]
+def _hub_parent(
+    child: _Node, layout: _NodeLayout, params: GraphParams, rng: random.Random
+) -> _Node:
+    """Any node below the child, weighted by popularity × e^(−generation / decay)."""
     # The decay keeps hubs near the bottom of the graph: dimension tables, calendars, config.
-    weight = popularity[by_generation] * np.exp(-sorted_generation / params.hub_generation_decay)
-    cumulative = np.concatenate([[0.0], np.cumsum(weight)])
-    below = np.searchsorted(sorted_generation, generation, side="left")
-    position = _pick_weighted(cumulative, np.zeros_like(below), below, rng)
-    return by_generation[position]
+    # All nodes of a generation share its decay factor, so drawing a generation by the total
+    # weight of its nodes, then a node within it by popularity, gives each node that weight.
+    # No generation below the child is empty: each holds one of its chain of level-fixing parents.
+    below = range(child.generation)
+    weights = [
+        math.exp(-generation / params.hub_generation_decay)
+        * layout.generations[generation].total_popularity
+        for generation in below
+    ]
+    generation = rng.choices(below, weights=weights)[0]
+    return layout.generations[generation].draw(rng)
 
 
-def _pick_weighted(
-    cumulative: FloatArray, low: IntArray, high: IntArray, rng: np.random.Generator
-) -> IntArray:
-    """For each range [low, high), an index drawn proportionally to its weight.
+# --- Distributions the random module lacks ---
 
-    `cumulative[i]` is the total weight of all indices before `i`.
-    """
-    # Each index owns a stretch of the number line as long as its weight. Draw a point
-    # within the range's stretches and find whose stretch it falls in.
-    targets = cumulative[low] + rng.random(len(low)) * (cumulative[high] - cumulative[low])
-    picked = np.searchsorted(cumulative, targets, side="right") - 1
-    # Float rounding can land a target on a range's edge.
-    return np.clip(picked, low, high - 1)
+
+def _poisson(mean: float, rng: random.Random) -> int:
+    """Number of events in one unit of time, when events happen independently at rate `mean`."""
+    # The gaps between such events are exponential: count how many gaps fit in one unit.
+    events = 0
+    elapsed = rng.expovariate(mean)
+    while elapsed < 1:
+        events += 1
+        elapsed += rng.expovariate(mean)
+    return events
+
+
+def _geometric(p: float, rng: random.Random) -> int:
+    """Number of tries up to and including the first success, each succeeding with chance `p`."""
+    tries = 1
+    while rng.random() >= p:
+        tries += 1
+    return tries
 
 
 # --- Finishing ---
 
 
-def _deduplicate(parents: IntArray, children: IntArray, num_nodes: int) -> tuple[IntArray, IntArray]:
-    # Encode each edge as one number, so np.unique can drop duplicates, then decode.
-    edges = np.unique(parents * num_nodes + children)
-    return edges // num_nodes, edges % num_nodes
-
-
-def _shuffle(
-    parents: IntArray,
-    children: IntArray,
-    layout: _NodeLayout,
-    pipelines: list[Pipeline],
-    rng: np.random.Generator,
-) -> SyntheticDag:
-    """Random node ids and edge order, so neither reveals the topological order."""
-    # new_id[old id] is the node's new id; node attributes move along with the node.
-    new_id = rng.permutation(layout.num_nodes)
-    edge_order = rng.permutation(len(parents))
-    generation = np.empty(layout.num_nodes, dtype=np.int32)
-    generation[new_id] = layout.generation
-    pipeline = np.empty(layout.num_nodes, dtype=np.int32)
-    pipeline[new_id] = layout.pipeline
-    return SyntheticDag(
-        parents=new_id[parents[edge_order]].astype(np.int32),
-        children=new_id[children[edge_order]].astype(np.int32),
-        generation=generation,
-        pipeline=pipeline,
-        pipelines=pipelines,
-    )
-
-
-def _check_guarantees(dag: SyntheticDag) -> None:
+def _check_guarantees(edges: Collection[tuple[int, int]], nodes: list[_Node]) -> None:
     # Every edge goes up at least one generation, so no path can loop back: no cycles.
-    parent_generation = dag.generation[dag.parents]
-    child_generation = dag.generation[dag.children]
-    assert (parent_generation < child_generation).all(), "edge does not go up a generation"
+    assert all(
+        nodes[parent].generation < nodes[child].generation for parent, child in edges
+    ), "edge does not go up a generation"
 
     # Every non-root has a parent exactly one generation lower. With the check above, the
     # planned generation is then the longest path from a root, as Kahn's algorithm computes.
-    has_level_fixing_parent = np.zeros(dag.num_nodes, dtype=bool)
-    has_level_fixing_parent[dag.children[parent_generation == child_generation - 1]] = True
-    assert has_level_fixing_parent[dag.generation > 0].all(), "non-root without level-fixing parent"
+    has_level_fixing_parent = {
+        child for parent, child in edges if nodes[parent].generation == nodes[child].generation - 1
+    }
+    assert all(
+        node.id in has_level_fixing_parent for node in nodes if node.generation > 0
+    ), "non-root without level-fixing parent"
