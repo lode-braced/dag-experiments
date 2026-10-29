@@ -391,6 +391,12 @@ MongoDB too, and are skipped without it.
 the report as Cloud Run jobs that reach it over the VPC. It works in the project `gcloud` is set
 to, in europe-west1, and needs docker, `gcloud` logged in and billing enabled on the project.
 
+> [!WARNING]
+> Running it as shown below costs about $5 at list prices, before Cloud Run's free tier: $4.12
+> of worker time on Cloud Run, $0.56 of VM time, and about $0.30 for the loading, monitoring and
+> reporting jobs and the network. Only run it if seeing it run for yourself is worth that, and
+> run `deploy/gcp.sh down` afterwards: until then, the VM bills for up to 6 hours.
+
 ```shell
 gcloud services enable run.googleapis.com compute.googleapis.com artifactregistry.googleapis.com
 
