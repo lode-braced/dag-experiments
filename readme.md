@@ -53,7 +53,7 @@ The two ways to run a DAG, both in plain Python in `src/dag_experiments/evaluati
 - **Compiled generational plan**: before the run, Kahn's algorithm sorts the nodes into
   generations. Workers then run the plan generation by generation: a generation starts once the
   previous one has finished.
-- **As soon as possible**: a dict holds every node's dependents and its unfinished dependencies.
+- **As soon as possible**: Convert the graph into a representation that can be used easily at runtime: a dict holds every node's dependents and its unfinished dependencies.
   When a node completes, it is popped from its dependents' dependencies, and a dependent whose
   last dependency was popped can run right away.
 
@@ -87,14 +87,22 @@ once that list is gone, including the node ids it shares with it.
 A simulation runs the 1.2M-node baseline graph with a fixed number of workers. Every node gets a
 runtime from a gamma distribution with a mean of 10 s, and the chart varies its standard
 deviation: from 0, where every node takes exactly 10 s, to ±30 s, where 64% of the nodes take
-under a second and 5% over a minute. At ±3 s it has the mean and standard deviation of a Poisson
-distribution. Both approaches get the same runtimes. A worker runs one node at a time, and
+under a second and 5% over a minute. Both approaches get the same runtimes. A worker runs one node at a time, and
 handing out work costs nothing. Within a generation, each node goes to the first free worker; as
 soon as possible hands ready nodes to free workers in the order they became ready. The worker
 counts go 10, 20, 50, ... and stop at the first one where as soon as possible is within 1% of its
 run time with a worker for every node.
 
 ![The generational plan's run time divided by as soon as possible's, against workers, per runtime spread](docs/images/runtime_spread.png)
+
+> [!NOTE]
+> The worker counts are large because the graph is: the point where the plan starts to fall behind
+> grows with the graph. That is also why the chart shows a ratio rather than absolute run times.
+> On smaller graphs the curves keep their shape at fewer workers. At ±3 s, the plan falls 5%
+> behind at about 500 workers for 1.2M nodes, between 200 and 500 for 400k nodes, and between
+> 20 and 50 for 40k nodes.
+
+![The same chart for graphs of 400,000 and 40,000 nodes](docs/images/runtime_spread_smaller_graphs.png)
 
 - **With few workers, the plan costs little.** The workers are the bottleneck: 10 workers take
   about 333 hours either way. The plan stays within about 5% of as soon as possible up to 500
@@ -157,7 +165,8 @@ uv run python -m dag_experiments.evaluation simulate --runtime-sd 0 1 3 10 30
 # Redraw the charts in docs/images from the baseline graph
 uv run python -m dag_experiments.visualization.charts
 
-# Redraw the runtime spread chart (runs the simulations, several minutes)
+# Redraw the runtime spread charts, for the baseline and two smaller graphs (runs the
+# simulations, several minutes)
 uv run python -m dag_experiments.visualization.evaluation
 ```
 
