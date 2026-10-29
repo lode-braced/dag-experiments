@@ -15,16 +15,11 @@ import numpy as np
 from dag_experiments.evaluation.plans import Edge, complete, dependency_dict, generational_plan
 
 
-def poisson_runtimes(num_nodes: int, mean: float, seed: int) -> list[int]:
-    """A runtime per node in seconds, Poisson distributed around `mean`."""
-    return np.random.default_rng(seed).poisson(mean, num_nodes).tolist()
-
-
 def gamma_runtimes(num_nodes: int, mean: float, sd: float, seed: int) -> list[float]:
     """A runtime per node in seconds, gamma distributed with the given standard deviation.
 
-    Unlike Poisson, the spread is set apart from the mean. A standard deviation of 0 gives
-    every node exactly the mean.
+    The spread is set apart from the mean. A standard deviation of 0 gives every node exactly
+    the mean.
     """
     if sd == 0:
         return [mean] * num_nodes

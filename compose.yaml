@@ -1,0 +1,16 @@
+# The distributed setup on one machine: a MongoDB and as many worker containers as you scale
+# to. See "Distributed workers" in readme.md for the commands.
+name: dag-experiments
+services:
+  mongo:
+    # 8.0 refuses to start on Linux 6.19 and newer (SERVER-121912).
+    image: mongo:8.2
+    ports:
+      - "27017:27017"
+  worker:
+    build: .
+    command: ["work", "--threads", "${THREADS:-10}", "--lease", "${LEASE:-60}"]
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+    depends_on:
+      - mongo

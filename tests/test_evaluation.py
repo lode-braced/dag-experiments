@@ -4,7 +4,7 @@ import pytest
 
 from dag_experiments.evaluation.plans import complete, dependency_dict, generational_plan
 from dag_experiments.evaluation.simulation import (
-    poisson_runtimes,
+    gamma_runtimes,
     run_asap,
     run_generational,
     worker_sweep,
@@ -72,28 +72,29 @@ def test_unlimited_workers_wait_only_for_dependencies_or_for_the_generation() ->
 def test_unlimited_asap_takes_the_longest_path() -> None:
     dag = generate(replace(BASELINE, nodes=10_000), seed=2)
     edges = list(zip(dag.parents.tolist(), dag.children.tolist()))
-    runtimes = poisson_runtimes(dag.num_nodes, mean=10, seed=2)
+    runtimes = gamma_runtimes(dag.num_nodes, mean=10, sd=3, seed=2)
 
     # The longest path, by runtime, ending at each node, filled in generation order.
     parents: list[list[int]] = [[] for _ in range(dag.num_nodes)]
     for parent, child in edges:
         parents[child].append(parent)
-    finish = [0] * dag.num_nodes
+    finish = [0.0] * dag.num_nodes
     plan = generational_plan(edges, dag.num_nodes)
     for nodes in plan:
         for node in nodes:
             finish[node] = runtimes[node] + max((finish[parent] for parent in parents[node]), default=0)
 
     assert run_asap(edges, dag.num_nodes, runtimes, workers=dag.num_nodes) == max(finish)
-    assert run_generational(plan, runtimes, workers=dag.num_nodes) == sum(
-        max(runtimes[node] for node in nodes) for nodes in plan
+    # sum() rounds floats differently from adding them one generation at a time.
+    assert run_generational(plan, runtimes, workers=dag.num_nodes) == pytest.approx(
+        sum(max(runtimes[node] for node in nodes) for nodes in plan)
     )
 
 
 def test_the_worker_sweep_stops_once_asap_saturates() -> None:
     dag = generate(replace(BASELINE, nodes=10_000), seed=2)
     edges = list(zip(dag.parents.tolist(), dag.children.tolist()))
-    runtimes = poisson_runtimes(dag.num_nodes, mean=10, seed=2)
+    runtimes = gamma_runtimes(dag.num_nodes, mean=10, sd=3, seed=2)
 
     sweep, unlimited = worker_sweep(edges, dag.num_nodes, runtimes)
 

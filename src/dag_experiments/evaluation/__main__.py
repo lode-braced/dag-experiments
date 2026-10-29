@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from dag_experiments.evaluation.plans import dependency_dict, generational_plan
 from dag_experiments.evaluation.profiling import bookkeeping_seconds, measure
-from dag_experiments.evaluation.simulation import gamma_runtimes, poisson_runtimes, worker_sweep
+from dag_experiments.evaluation.simulation import gamma_runtimes, worker_sweep
 from dag_experiments.synthetic.generator import BASELINE, SyntheticDag, generate
 
 COMPILE_SIZES = [10_000, 100_000, 1_200_000, 5_000_000]
@@ -23,8 +23,8 @@ def main() -> None:
     simulate_parser.add_argument("--nodes", type=int, default=BASELINE.nodes)
     simulate_parser.add_argument("--runtime-mean", type=float, default=10.0)
     simulate_parser.add_argument(
-        "--runtime-sd", type=float, nargs="+",
-        help="gamma runtimes with these standard deviations instead of Poisson ones",
+        "--runtime-sd", type=float, nargs="+", default=[3.0],
+        help="simulate gamma runtimes with each of these standard deviations",
     )
     for command in (compile_parser, simulate_parser):
         command.add_argument("--seed", type=int, default=0)
@@ -50,14 +50,11 @@ def main() -> None:
         dag = generate(replace(BASELINE, nodes=args.nodes), args.seed)
         edges = _edges(dag)
         mean = args.runtime_mean
-        if args.runtime_sd:
-            distributions = {
-                f"gamma, mean {mean:g} s, standard deviation {sd:g} s":
-                    gamma_runtimes(dag.num_nodes, mean, sd, args.seed)
-                for sd in args.runtime_sd
-            }
-        else:
-            distributions = {f"Poisson, mean {mean:g} s": poisson_runtimes(dag.num_nodes, mean, args.seed)}
+        distributions = {
+            f"gamma, mean {mean:g} s, standard deviation {sd:g} s":
+                gamma_runtimes(dag.num_nodes, mean, sd, args.seed)
+            for sd in args.runtime_sd
+        }
         for name, runtimes in distributions.items():
             sweep, unlimited = worker_sweep(edges, dag.num_nodes, runtimes)
             print(f"\nRuntimes: {name}")
