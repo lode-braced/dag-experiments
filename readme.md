@@ -1,20 +1,35 @@
-# Performance experiments for dag workflows
+# Performance experiments for DAG workflows
 
-Performance experiments following a discussion
-on whether to use generational topological searches
-to compile an execution plan vs evaluating the dag
-representation in runtime, specifically for large
-(500k-5M nodes) flows
+Performance experiments following a discussion on whether to compile an execution plan with a
+generational topological sort, or to evaluate the DAG representation at runtime, specifically for
+large flows of 500k to 5M nodes.
 
-This split up in a few parts:
+This is split into a few parts:
 
-1. Generating synthetic graphs that simulate the shapes of actual data pipeline dags
-2. Using the synthetic graphs, evaluating the memory and computational complexity of runtime dag evaluation vs compiling
-   an execution plan
-3. A solution for coordinating runtime dag evaluation in a distributed system of workers, with MongoDB as the
-   central data store.
+1. Generating synthetic graphs that simulate the shapes of actual data pipeline DAGs.
+2. Using the synthetic graphs, evaluating the memory and computational complexity of runtime DAG
+   evaluation against compiling an execution plan.
+3. A solution for coordinating runtime DAG evaluation in a distributed system of workers, with
+   MongoDB as the central data store.
 
-# Generating synthetic graphs representing actual data pipeline dags
+# Takeaways
+
+- **The graph computation itself takes seconds, even at millions of nodes.** In plain Python,
+  compiling the plan of the 5M-node graph takes 8.5 s, and building the dict for runtime
+  evaluation 10 s. Popping every completed node during the run adds about as much again. At
+  1.2M nodes, compiling takes 1.5 s and popping 2 s, against 16 minutes for the fastest possible
+  run with every node taking 10 s. In any real flow, the time spent on the graph is negligible.
+- **Which approach wins depends on the number of workers and on how much runtimes vary.** With
+  up to 500 workers and runtimes within ±3 s of a 10 s mean, the generational plan stays within
+  about 5% of running nodes as soon as possible. The wider the spread, the sooner it falls
+  behind: at ±30 s it ends up 11× slower.
+- **Runtime evaluation pays in memory and coordination instead.** The dict stays in memory for
+  the whole run, about 650 bytes per node in Python. Shared through MongoDB, a run with 10,000
+  workers on the 1.2M-node graph took 0.5% longer than the simulation, where coordinating costs
+  nothing. Locally, one MongoDB handled about 5,000 completions a second, four times what the
+  graph needs at its peak.
+
+# Generating synthetic graphs representing actual data pipeline DAGs
 
 The experiments run on synthetic graphs shaped like data-flow dependency graphs (ETL, lineage,
 build-style task execution). A graph is made of thousands of pipelines of different sizes, each
@@ -46,16 +61,17 @@ the baseline graph of 1.2M nodes and 2.9M edges:
 The model, its parameters and why, and the full statistics are in
 [docs/synthetic_graphs.md](docs/synthetic_graphs.md).
 
-# Evaluating the memory and computational complexity
+# Compiling a plan or evaluating at runtime
 
 The two ways to run a DAG, both in plain Python in `src/dag_experiments/evaluation/`:
 
 - **Compiled generational plan**: before the run, Kahn's algorithm sorts the nodes into
   generations. Workers then run the plan generation by generation: a generation starts once the
   previous one has finished.
-- **As soon as possible**: Convert the graph into a representation that can be used easily at runtime: a dict holds every node's dependents and its unfinished dependencies.
-  When a node completes, it is popped from its dependents' dependencies, and a dependent whose
-  last dependency was popped can run right away.
+- **As soon as possible**: before the run, the graph is converted into a representation that is
+  easy to use at runtime, a dict holding every node's dependents and its unfinished
+  dependencies. When a node completes, it is popped from its dependents' dependencies, and a
+  dependent whose last dependency was popped can run right away.
 
 ## Preparing the graph
 
@@ -87,20 +103,18 @@ once that list is gone, including the node ids it shares with it.
 A simulation runs the 1.2M-node baseline graph with a fixed number of workers. Every node gets a
 runtime from a gamma distribution with a mean of 10 s, and the chart varies its standard
 deviation: from 0, where every node takes exactly 10 s, to ±30 s, where 64% of the nodes take
-under a second and 5% over a minute. Both approaches get the same runtimes. A worker runs one node at a time, and
-handing out work costs nothing. Within a generation, each node goes to the first free worker; as
-soon as possible hands ready nodes to free workers in the order they became ready. The worker
-counts go 10, 20, 50, ... and stop at the first one where as soon as possible is within 1% of its
-run time with a worker for every node.
+under a second and 5% over a minute. Both approaches get the same runtimes. A worker runs one
+node at a time, and handing out work costs nothing. Within a generation, each node goes to the
+first free worker; as soon as possible hands ready nodes to free workers in the order they became
+ready. The worker counts go 10, 20, 50, ... and stop at the first one where as soon as possible
+is within 1% of its run time with a worker for every node.
 
 ![The generational plan's run time divided by as soon as possible's, against workers, per runtime spread](docs/images/runtime_spread.png)
 
 > [!NOTE]
 > The worker counts are large because the graph is: the point where the plan starts to fall behind
 > grows with the graph. That is also why the chart shows a ratio rather than absolute run times.
-> On smaller graphs the curves keep their shape at fewer workers. At ±3 s, the plan falls 5%
-> behind at about 500 workers for 1.2M nodes, between 200 and 500 for 400k nodes, and between
-> 20 and 50 for 40k nodes.
+> On smaller graphs the curves keep their shape at fewer workers.
 
 ![The same chart for graphs of 400,000 and 40,000 nodes](docs/images/runtime_spread_smaller_graphs.png)
 
@@ -117,8 +131,8 @@ run time with a worker for every node.
   same 16 minutes: each of the 94 generations adds exactly 10 s.
 
 > [!NOTE]
-> The simulation leaves out an additional cost the "ASAP" version has: The cost of coordinating workers,
-> which the next section covers.
+> The simulation leaves out a cost that running as soon as possible adds: coordinating the
+> workers through the shared dict, which the next section covers.
 
 # Coordinating runtime DAG evaluation across distributed workers
 
@@ -220,7 +234,8 @@ The code is in `src/dag_experiments/distributed/`.
 
 > [!NOTE]
 > The calls above are a slight simplification of the code, which also has a lease system in
-> case workers die:
+> case workers die. Without it, a worker dying during a run would leave its node running
+> forever, and the run would never finish:
 >
 > - A claim also sets `lease_until` a minute ahead on the server's clock.
 > - While the node runs, a background thread pushes it back every 20 s.
@@ -228,10 +243,8 @@ The code is in `src/dag_experiments/distributed/`.
 >   through an index on `lease_until`. Another worker then takes over a node whose worker died,
 >   or whose claim reply got lost.
 >
-> That is why the dependents are released before the node is marked done. A worker that dies in
-> between leaves the node running, and the one taking it over repeats the release.
-> That way, if one of the workers happens to die during the test, it does not cause
-> a node to never complete and the test to hang forever.
+> That is also why the dependents are released before the node is marked done. A worker that
+> dies in between leaves the node running, and the one taking it over repeats the release.
 
 Three more choices keep the calls safe with many workers sharing them over a network:
 
@@ -240,7 +253,7 @@ Three more choices keep the calls safe with many workers sharing them over a net
 - **Dependencies are a list to pull from, not a count.** A count lowered with `$inc` would be
   smaller, but repeating the release would lower it twice and release a dependent too early.
   Pulling a dependency that is already gone leaves the list as it is, and the
-  `dependencies: $node_num` filter skips those dependents altogether, so a repeated release can't set
+  `dependencies: 4711` filter skips those dependents altogether, so a repeated release can't set
   a running or done dependent back to ready.
 - **Each call changes documents atomically one by one**, so there are no transactions, and a
   single MongoDB server is enough.
@@ -267,21 +280,17 @@ workers, where coordinating costs nothing.
 To find the most MongoDB can take, nodes with no runtime have the workers claim and complete
 nodes nonstop, on a 50k-node graph:
 
-| Workers                    | Completions/s | Completions/s, oldest first | Write conflicts per claim, oldest first |
-|----------------------------|---------------|-----------------------------|-----------------------------------------|
-| 1                          | 940           | 1,220                       | 0                                       |
-| 10, in separate containers | 5,180         | 3,700–4,000                 | 9                                       |
-| 50, as 10 containers of 5  | 4,670         | 3,550                       | 12                                      |
+| Workers                    | Completions/s |
+|----------------------------|---------------|
+| 1                          | 940           |
+| 10, in separate containers | 5,180         |
+| 50, as 10 containers of 5  | 4,670         |
 
 - **At the baseline graph's peak rate, coordinating costs about 2%.** The MongoDB calls take
   about 1.4 ms per node: 1.4% of the scaled-down 0.1 s mean runtime, and 0.014% of the real
   10 s. Loading the 1.2M-node graph takes 13 to 15 s and 163 MB of documents.
 - **One MongoDB handles about 5,000 completions a second**, four times the baseline graph's
   peak, using 4.5 of the 10 cores.
-- **Claiming the oldest ready node had the workers race for it.** With 10 workers claiming
-  nonstop, every claim hit 9 write conflicts that MongoDB retried, and the most it handled was
-  3,700 to 4,000 a second. A single worker is slower with random claims, 940 against 1,220 a
-  second, because finding the random node takes a call of its own.
 - **A crashed worker costs one lease.** With a lease of 5 s, killing one of four containers of
   5 workers each mid-run left its 5 running nodes to the other 15 workers once the leases ran
   out, and they finished all 20,000 nodes.
@@ -290,7 +299,7 @@ nodes nonstop, on a 50k-node graph:
 > The local runs leave out thousands of workers, and with them the network between workers and
 > MongoDB. The next section runs 10,000.
 
-## Deployed as a google cloud run project
+## Deployed as a Google Cloud Run project
 
 The same image runs on Google Cloud, in europe-west1: MongoDB 8.2 in a container on a
 c3-standard-8 VM (8 vCPU, 32 GB), and the workers as a Cloud Run job of 50 tasks with 1 vCPU
@@ -394,17 +403,16 @@ dag-experiments-worker-1` during a run then shows the other workers taking over 
 against the MongoDB on `localhost:27017`. The tests in `tests/test_distributed.py` need that
 MongoDB too, and are skipped without it.
 
-### On a google cloud run project
+### On a Google Cloud Run project
 
 `deploy/gcp.sh` runs MongoDB in a container on a VM, and the workers, the loader, the monitor and
 the report as Cloud Run jobs that reach it over the VPC. It works in the project `gcloud` is set
 to, in europe-west1, and needs docker, `gcloud` logged in and billing enabled on the project.
 
 > [!WARNING]
-> Running it as shown below costs about $5 at list prices, before Cloud Run's free tier: $4.12
-> of worker time on Cloud Run, $0.56 of VM time, and about $0.30 for the loading, monitoring and
-> reporting jobs and the network. Only run it if seeing it run for yourself is worth that, and
-> run `deploy/gcp.sh down` afterwards: until then, the VM bills for up to 6 hours.
+> Running it as shown below costs about $5, like the run above. Only run it if seeing it run for
+> yourself is worth that, and run `deploy/gcp.sh down` afterwards: until then, the VM bills for
+> up to 6 hours.
 
 ```shell
 gcloud services enable run.googleapis.com compute.googleapis.com artifactregistry.googleapis.com
