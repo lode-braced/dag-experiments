@@ -5,8 +5,9 @@ services:
   mongo:
     # 8.0 refuses to start on Linux 6.19 and newer (SERVER-121912).
     image: mongo:8.2
+    # Not on the standard port, so it can run next to a MongoDB the machine already has.
     ports:
-      - "27017:27017"
+      - "27117:27017"
   worker:
     build: .
     command: ["work", "--threads", "${THREADS:-10}", "--lease", "${LEASE:-60}"]

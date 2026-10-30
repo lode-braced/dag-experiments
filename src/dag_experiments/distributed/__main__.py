@@ -39,7 +39,7 @@ def main() -> None:
     monitor_parser.add_argument("--interval", type=float, default=10.0, help="seconds")
     report_parser = commands.add_parser("report", help="compare the last run with the simulation")
     for command in (load_parser, work_parser, monitor_parser, report_parser):
-        command.add_argument("--mongo-url", default=os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+        command.add_argument("--mongo-url", default=os.environ.get("MONGO_URL", "mongodb://localhost:27117"))
     args = parser.parse_args()
 
     # Each worker thread and the thread renewing its lease can each be in a call at once.

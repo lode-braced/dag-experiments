@@ -402,7 +402,7 @@ docker compose down
 `LEASE=5` before `docker compose up` shortens the lease to 5 s; `docker kill
 dag-experiments-worker-1` during a run then shows the other workers taking over its nodes.
 `uv run python -m dag_experiments.distributed work --threads 10` runs workers outside docker,
-against the MongoDB on `localhost:27017`.
+against the MongoDB of `compose.yaml`, on `localhost:27117`.
 
 ### On a Google Cloud Run project
 
