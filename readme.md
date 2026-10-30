@@ -14,12 +14,14 @@ This is split into a few parts:
 
 # Takeaways
 
-- Graph computation time is negligible, even for millions of nodes: In plain Python, At 1.2M nodes,
-  compiling takes 1.5 s and popping (the runtime cost of the non-generational execution) 2 s,
-  against 16 minutes for execution of a graph where nodes take only 10 seconds to complete. In any
-  real flow, the time spent on the graph is negligible.
-- Runtime coordination has a cost, but scales well: A basic setup coordinating
-  the graph state in mongodb is easily able to process about 5000 completions per second.
+- Graph computation time is negligible, even for millions of nodes: In plain Python, compiling
+  the plan of the 1.2M-node graph takes 1.5 s, and popping completed nodes (the runtime cost of
+  running as soon as possible) 2 s, against 16 minutes for the fastest possible run of that graph
+  with every node taking only 10 s. At 5M nodes, both take about 10 s.
+- Runtime coordination has a cost, but scales well: A basic setup coordinating the graph state in
+  MongoDB handles about 5,000 completions a second, four times what the 1.2M-node graph needs at
+  its peak. A run with 10,000 workers took 0.5% longer than the simulation, where coordinating
+  costs nothing.
 - Which approach wins depends on the number of workers and on how much runtimes vary: With
   up to 500 workers and runtimes within ±3 s of a 10 s mean, the generational plan stays within
   about 5% of running nodes as soon as possible. The wider the spread, the sooner it falls
@@ -339,6 +341,10 @@ uv sync
 uv run pytest
 ```
 
+The tests of the distributed workers start a throwaway MongoDB container through
+[testcontainers](https://testcontainers.com/), so they need Docker, and are skipped without it.
+They never use a MongoDB that is already running.
+
 ## Synthetic graphs
 
 ```shell
@@ -396,8 +402,7 @@ docker compose down
 `LEASE=5` before `docker compose up` shortens the lease to 5 s; `docker kill
 dag-experiments-worker-1` during a run then shows the other workers taking over its nodes.
 `uv run python -m dag_experiments.distributed work --threads 10` runs workers outside docker,
-against the MongoDB on `localhost:27017`. The tests in `tests/test_distributed.py` need that
-MongoDB too, and are skipped without it.
+against the MongoDB on `localhost:27017`.
 
 ### On a Google Cloud Run project
 

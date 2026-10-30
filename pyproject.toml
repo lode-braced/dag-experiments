@@ -23,6 +23,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-mock>=3.17.0",
     "scipy-stubs>=1.18.1.1",
+    "testcontainers[mongodb]>=4.15.0",
 ]
 
 [tool.pytest.ini_options]

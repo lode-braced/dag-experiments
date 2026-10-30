@@ -1,4 +1,3 @@
-import os
 import threading
 import time
 import uuid
@@ -7,30 +6,40 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
+from docker.errors import DockerException
 from pymongo import MongoClient
-from pymongo.errors import AutoReconnect, ServerSelectionTimeoutError
+from pymongo.errors import AutoReconnect
 from pytest_mock import MockerFixture
+from testcontainers.community.mongodb import MongoDbContainer
 
 from dag_experiments.distributed import store, worker
 from dag_experiments.distributed.store import Claim, Nodes
 from dag_experiments.distributed.worker import work
 from dag_experiments.synthetic.generator import BASELINE, generate
 
+MONGO_IMAGE = "mongo:8.2"  # as in compose.yaml
 # 0 and 1 are roots, 2 depends on 0, and 3 depends on 1 and 2.
 EDGES = [(0, 2), (1, 3), (2, 3)]
 
 
-@pytest.fixture
-def nodes() -> Iterator[Nodes]:
-    client = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"), serverSelectionTimeoutMS=1000)
+@pytest.fixture(scope="session")
+def mongo() -> Iterator[MongoClient]:
+    """A throwaway MongoDB for this test run, so the tests never touch one that is in use."""
     try:
-        client.admin.command("ping")
-    except ServerSelectionTimeoutError:
-        pytest.skip("needs a MongoDB: docker compose up -d mongo")
-    database = client[f"test_{uuid.uuid4().hex}"]
-    yield database.nodes
-    client.drop_database(database.name)
+        container = MongoDbContainer(MONGO_IMAGE).start()
+    except DockerException:
+        pytest.skip("needs Docker, to start a throwaway MongoDB")
+    client = container.get_connection_client()
+    yield client
     client.close()
+    container.stop()
+
+
+@pytest.fixture
+def nodes(mongo: MongoClient) -> Iterator[Nodes]:
+    database = mongo[f"test_{uuid.uuid4().hex}"]
+    yield database.nodes
+    mongo.drop_database(database.name)
 
 
 def states(nodes: Nodes) -> dict[int, str]:
