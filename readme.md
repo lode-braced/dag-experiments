@@ -14,20 +14,16 @@ This is split into a few parts:
 
 # Takeaways
 
-- **The graph computation itself takes seconds, even at millions of nodes.** In plain Python,
-  compiling the plan of the 5M-node graph takes 8.5 s, and building the dict for runtime
-  evaluation 10 s. Popping every completed node during the run adds about as much again. At
-  1.2M nodes, compiling takes 1.5 s and popping 2 s, against 16 minutes for the fastest possible
-  run with every node taking 10 s. In any real flow, the time spent on the graph is negligible.
-- **Which approach wins depends on the number of workers and on how much runtimes vary.** With
+- Graph computation time is negligible, even for millions of nodes: In plain Python, At 1.2M nodes,
+  compiling takes 1.5 s and popping (the runtime cost of the non-generational execution) 2 s,
+  against 16 minutes for execution of a graph where nodes take only 10 seconds to complete. In any
+  real flow, the time spent on the graph is negligible.
+- Runtime coordination has a cost, but scales well: A basic setup coordinating
+  the graph state in mongodb is easily able to process about 5000 completions per second.
+- Which approach wins depends on the number of workers and on how much runtimes vary: With
   up to 500 workers and runtimes within ±3 s of a 10 s mean, the generational plan stays within
   about 5% of running nodes as soon as possible. The wider the spread, the sooner it falls
   behind: at ±30 s it ends up 11× slower.
-- **Runtime evaluation pays in memory and coordination instead.** The dict stays in memory for
-  the whole run, about 650 bytes per node in Python. Shared through MongoDB, a run with 10,000
-  workers on the 1.2M-node graph took 0.5% longer than the simulation, where coordinating costs
-  nothing. Locally, one MongoDB handled about 5,000 completions a second, four times what the
-  graph needs at its peak.
 
 # Generating synthetic graphs representing actual data pipeline DAGs
 
